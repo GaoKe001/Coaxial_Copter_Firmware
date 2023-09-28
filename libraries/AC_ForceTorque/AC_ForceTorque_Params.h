@@ -28,7 +28,7 @@ public:
     AP_Float min_torque_Nm;
     AP_Float max_torque_Nm;
 
-    AP_Int8 type;
+    AP_Int8  type;
     AP_Int8  location;
 
 };

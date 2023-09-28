@@ -15,6 +15,6 @@ private:
     // get a reading
     bool get_reading(Vector3f &reading_force_N, Vector3f &reading_torque_Nm) override;
 
-    uint8_t  linebuf[20];
+    uint8_t  linebuf[30];
     uint8_t  linebuf_len;
 };

@@ -4,10 +4,15 @@
 #include <AP_HAL/utility/sparse-endian.h>
 #include <ctype.h>
 
-#define DR304_HDR 0x03   // Header Byte from DR304_Serial
-#define DR304_DATA_LENGTH 0x0E // length of Data for Byte of DR304_Serial
-
 extern const AP_HAL::HAL& hal;
+
+#define DR304_FRAME_HEADER1 0x01    // Header1 Byte from DR304_Serial
+#define DR304_FRAME_HEADER2 0x03    // Header2 Byte from DR304_Serial
+#define DR304_FRAME_LENGTH 29
+#define DR304_DATA_LENGTH 0x18     // length of Data for Byte of DR304_Serial
+
+
+
 
 #define DR304_FRAME_HEADER 0x03
 #define DR304_FRAME_LENGTH 18
@@ -57,8 +62,12 @@ bool AC_ForceTorque_DR304_Serial::get_reading(Vector3f &reading_force_N, Vector3
         return false;
     }
 
-    float sum_roll_deg = 0;
-    float sum_yaw_deg = 0;
+    float sum_fx_N = 0;
+    float sum_fy_N = 0;
+    float sum_fz_N = 0;
+    float sum_Tx_Nm = 0;
+    float sum_Ty_Nm = 0;
+    float sum_Tz_Nm = 0;
     uint16_t count = 0;
     uint16_t count_out_of_positive_range = 0;
     uint16_t count_out_of_negtive_range = 0;
@@ -74,13 +83,13 @@ bool AC_ForceTorque_DR304_Serial::get_reading(Vector3f &reading_force_N, Vector3
         uint8_t c = (uint8_t)r;
         // if buffer is empty and this byte is 0x03, add to buffer
         if (linebuf_len == 0) {
-            if (c == DR304_FRAME_HEADER) {
+            if (c == DR304_FRAME_HEADER1) {
                 linebuf[linebuf_len++] = c;
             }
         } else if (linebuf_len == 1) {
             // if buffer has 1 element and this byte is 0x03, add it to buffer
             // if not clear the buffer
-            if (c == DR304_FRAME_HEADER) {
+            if (c == DR304_FRAME_HEADER2) {
                 linebuf[linebuf_len++] = c;
             } else {
                 linebuf_len = 0;
@@ -91,26 +100,42 @@ bool AC_ForceTorque_DR304_Serial::get_reading(Vector3f &reading_force_N, Vector3
             // if buffer now has 19 items try to decode it
             if (linebuf_len == DR304_FRAME_LENGTH) {
                 // calculate checksum
-                uint16_t crc = (linebuf[18]<<8) | linebuf[17];
-                if (crc == calc_crc_modbus(linebuf, 17)) {
-                    // calculate roll angle
-                    int32_t roll_raw = ((uint32_t)linebuf[6] << 24) | ((uint32_t)linebuf[5] << 16) | ((uint16_t)linebuf[4] << 8) | linebuf[3];
-                    // int32_t pitch_raw = ((uint32_t)linebuf[10] << 24) | ((uint32_t)linebuf[9] << 16) | ((uint16_t)linebuf[8] << 8) | linebuf[7];
-                    int32_t yaw_raw = ((uint32_t)linebuf[14] << 24) | ((uint32_t)linebuf[13] << 16) | ((uint16_t)linebuf[12] << 8) | linebuf[11];
-                    float roll = (float)((roll_raw - ROLL_YAW_OFFSET)*0.001); 
-                    // float pitch = (float)((pitch_raw - PITCH_OFFSET)*0.001);  
-                    float yaw = (float)((yaw_raw - ROLL_YAW_OFFSET)*0.001); 
-                    if (roll > INCLINATION_ROLL_MAX_DEGREE || yaw > INCLINATION_YAW_MAX_DEGREE) {
+                uint16_t crc = (linebuf[DR304_FRAME_LENGTH-1]<<8) | linebuf[DR304_FRAME_LENGTH-2];
+                if (crc == calc_crc_modbus(linebuf, DR304_FRAME_LENGTH-2)) {
+                    // calculate Fx raw data
+                    int32_t fx_raw = ((uint32_t)linebuf[3] << 24) | ((uint32_t)linebuf[4] << 16) | ((uint16_t)linebuf[5] << 8) | linebuf[6];
+                    // calculate Fy raw data
+                    int32_t fy_raw = ((uint32_t)linebuf[7] << 24) | ((uint32_t)linebuf[8] << 16) | ((uint16_t)linebuf[9] << 8) | linebuf[10];
+                    // calculate Fz raw data
+                    int32_t fz_raw = ((uint32_t)linebuf[11] << 24) | ((uint32_t)linebuf[12] << 16) | ((uint16_t)linebuf[13] << 8) | linebuf[14];
+                    // calculate Tx raw data
+                    int32_t Tx_raw = ((uint32_t)linebuf[15] << 24) | ((uint32_t)linebuf[16] << 16) | ((uint16_t)linebuf[17] << 8) | linebuf[18];
+                    // calculate Ty raw data
+                    int32_t Ty_raw = ((uint32_t)linebuf[19] << 24) | ((uint32_t)linebuf[20] << 16) | ((uint16_t)linebuf[21] << 8) | linebuf[22];
+                    // calculate Tz raw data
+                    int32_t Tz_raw = ((uint32_t)linebuf[23] << 24) | ((uint32_t)linebuf[24] << 16) | ((uint16_t)linebuf[25] << 8) | linebuf[26];
+                    float fx = (float)(fx_raw*0.001);
+                    float fy = (float)(fy_raw*0.001);
+                    float fz = (float)(fz_raw*0.001);
+                    float Tx = (float)(Tx_raw*0.0001);
+                    float Ty = (float)(Ty_raw*0.0001);
+                    float Tz = (float)(Tz_raw*0.0001);
+                    
+                    if (fx > FORCETORQUE_FORCE_MAX_N || fy > FORCETORQUE_FORCE_MAX_N || fz > FORCETORQUE_FORCE_MAX_N || Tx > FORCETORQUE_TORQUE_MAX_NM || Ty > FORCETORQUE_TORQUE_MAX_NM || Tz > FORCETORQUE_TORQUE_MAX_NM) {
                         // this reading is out of positive range
                         count_out_of_positive_range++;
-                    } else if((roll < - INCLINATION_ROLL_MAX_DEGREE) || (yaw < - INCLINATION_YAW_MAX_DEGREE)){
+                    } else if((fx < - FORCETORQUE_FORCE_MAX_N) || (fy < - FORCETORQUE_FORCE_MAX_N) || (fz < - FORCETORQUE_FORCE_MAX_N) || (Tx < - FORCETORQUE_TORQUE_MAX_NM) || (Ty < - FORCETORQUE_TORQUE_MAX_NM) || (Tz < - FORCETORQUE_TORQUE_MAX_NM)){
                         // this reading is out of negtive range
                         count_out_of_negtive_range++;
                     } else {
                         // add degree to sum
                         //hal.console->printf("555inclination tilt sensor uart: %f\t, %lu\t,  %lu\r\n", roll, roll_raw, (roll_raw - ROLL_YAW_OFFSET));
-                        sum_roll_deg += roll;
-                        sum_yaw_deg += yaw;
+                        sum_fx_N += fx;
+                        sum_fy_N += fy;
+                        sum_fz_N += fz;
+                        sum_Tx_Nm += Tx;
+                        sum_Ty_Nm += Ty;
+                        sum_Tz_Nm += Tz;
                         count++;
                     }
                 }                
@@ -123,22 +148,36 @@ bool AC_ForceTorque_DR304_Serial::get_reading(Vector3f &reading_force_N, Vector3
 
     if (count > 0) {
         // return average distance of readings
-        reading_roll_deg = sum_roll_deg / count;   
-        reading_yaw_deg = sum_yaw_deg / count;  
+        reading_force_N.x = sum_fx_N / count;
+        reading_force_N.y = sum_fy_N / count;
+        reading_force_N.z = sum_fz_N / count;
+        reading_torque_Nm.x = sum_Tx_Nm / count;
+        reading_torque_Nm.y = sum_Ty_Nm / count;
+        reading_torque_Nm.z = sum_Tz_Nm / count;
         return true;
     }
 
     if (count_out_of_positive_range > 0) {
         // if out of range readings return maximum range for the positive angle
-        reading_roll_deg = INCLINATION_ROLL_MAX_DEGREE;
-        reading_yaw_deg = INCLINATION_YAW_MAX_DEGREE;
+        reading_force_N.x = FORCETORQUE_FORCE_MAX_N;
+        reading_force_N.y = FORCETORQUE_FORCE_MAX_N;
+        reading_force_N.z = FORCETORQUE_FORCE_MAX_N;
+        reading_torque_Nm.x = FORCETORQUE_TORQUE_MAX_NM;
+        reading_torque_Nm.y = FORCETORQUE_TORQUE_MAX_NM;
+        reading_torque_Nm.z = FORCETORQUE_TORQUE_MAX_NM;
+
         return true;
     }
 
     if (count_out_of_negtive_range > 0) {
         // if out of range readings return maximum range for the negtive angle
-        reading_roll_deg = - INCLINATION_ROLL_MAX_DEGREE;
-        reading_yaw_deg = - INCLINATION_YAW_MAX_DEGREE;
+        reading_force_N.x = -FORCETORQUE_FORCE_MAX_N;
+        reading_force_N.y = -FORCETORQUE_FORCE_MAX_N;
+        reading_force_N.z = -FORCETORQUE_FORCE_MAX_N;
+        reading_torque_Nm.x = -FORCETORQUE_TORQUE_MAX_NM;
+        reading_torque_Nm.y = -FORCETORQUE_TORQUE_MAX_NM;
+        reading_torque_Nm.z = -FORCETORQUE_TORQUE_MAX_NM;
+
         return true;
     }
 
